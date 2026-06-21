@@ -23,10 +23,15 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 int snakeX[300];
 int snakeY[300];
 int snakeLen = 5;
-int dir = 1; // 0=Up, 1=Right, 2=Down, 3=Left
+int currentDir = 1; // Actual moving direction: 0=Up, 1=Right, 2=Down, 3=Left
+int nextDir = 1;    // Queued direction from button press
 int foodX, foodY;
 bool gameOver = false;
 int score = 0;
+
+// Timing Variables (Replaces delay)
+unsigned long lastMoveTime = 0;
+int moveDelay = 70; // Lower is faster
 
 void spawnFood() {
   bool valid = false;
@@ -41,7 +46,6 @@ void spawnFood() {
       }
     }
   }
-  // Draw the new food
   tft.fillRect(foodX * BLOCK_SIZE, foodY * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE, ILI9341_RED);
 }
 
@@ -49,7 +53,8 @@ void resetGame() {
   tft.fillScreen(ILI9341_BLACK);
   
   snakeLen = 5;
-  dir = 1; // Start moving right
+  currentDir = 1;
+  nextDir = 1;
   score = 0;
   gameOver = false;
   
@@ -57,33 +62,29 @@ void resetGame() {
   for (int i = 0; i < snakeLen; i++) {
     snakeX[i] = (GRID_W / 2) - i;
     snakeY[i] = GRID_H / 2;
-    // Draw initial snake
     tft.fillRect(snakeX[i] * BLOCK_SIZE, snakeY[i] * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE, ILI9341_GREEN);
   }
   
   spawnFood();
+  lastMoveTime = millis();
 }
 
 void setup() {
-  // Initialize buttons with internal pull-ups
   pinMode(BTN_UP, INPUT_PULLUP);
   pinMode(BTN_DOWN, INPUT_PULLUP);
   pinMode(BTN_LEFT, INPUT_PULLUP);
   pinMode(BTN_RIGHT, INPUT_PULLUP);
   
-  // Initialize TFT
   tft.begin();
-  tft.setRotation(1); // Landscape mode (320x240)
+  tft.setRotation(1); 
   tft.fillScreen(ILI9341_BLACK);
   
-  // Start Screen
   tft.setTextColor(ILI9341_WHITE);
   tft.setTextSize(3);
   tft.setCursor(80, 100);
   tft.print("SNAKE ARCADE");
   delay(2000);
   
-  // Floating pin 36 used for absolute random seed
   randomSeed(analogRead(36));
   resetGame();
 }
@@ -102,70 +103,77 @@ void loop() {
     tft.print("Score: ");
     tft.print(score);
     
-    // Press ANY button to restart
     if (digitalRead(BTN_UP) == LOW || digitalRead(BTN_DOWN) == LOW || 
         digitalRead(BTN_LEFT) == LOW || digitalRead(BTN_RIGHT) == LOW) {
-      delay(300); // Debounce
+      delay(300); // Debounce for restart only
       resetGame();
     }
     return;
   }
 
-  // --- Input Handling ---
-  // Using LOW because buttons are tied to GND with internal pull-ups
-  if (digitalRead(BTN_LEFT) == LOW && dir != 1) dir = 3;
-  else if (digitalRead(BTN_RIGHT) == LOW && dir != 3) dir = 1;
-  else if (digitalRead(BTN_UP) == LOW && dir != 2) dir = 0;
-  else if (digitalRead(BTN_DOWN) == LOW && dir != 0) dir = 2;
+  // --- 1. INSTANT INPUT HANDLING ---
+  // This runs continuously, so no button presses are ever missed.
+  if (digitalRead(BTN_LEFT) == LOW && currentDir != 1) nextDir = 3;
+  else if (digitalRead(BTN_RIGHT) == LOW && currentDir != 3) nextDir = 1;
+  else if (digitalRead(BTN_UP) == LOW && currentDir != 2) nextDir = 0;
+  else if (digitalRead(BTN_DOWN) == LOW && currentDir != 0) nextDir = 2;
 
-  // Remember the tail position so we can erase it cleanly
-  int tailX = snakeX[snakeLen - 1];
-  int tailY = snakeY[snakeLen - 1];
+  // --- 2. TIMED MOVEMENT ---
+  // Only move the snake when enough time has passed
+  if (millis() - lastMoveTime >= moveDelay) {
+    lastMoveTime = millis();
+    
+    // Lock in the queued direction
+    currentDir = nextDir;
 
-  // Shift body array
-  for (int i = snakeLen - 1; i > 0; i--) {
-    snakeX[i] = snakeX[i - 1];
-    snakeY[i] = snakeY[i - 1];
-  }
+    // Remember the exact tail position
+    int tailX = snakeX[snakeLen - 1];
+    int tailY = snakeY[snakeLen - 1];
 
-  // Move head
-  if (dir == 0) snakeY[0]--;       // Up
-  else if (dir == 1) snakeX[0]++;  // Right
-  else if (dir == 2) snakeY[0]++;  // Down
-  else if (dir == 3) snakeX[0]--;  // Left
+    // Shift body array
+    for (int i = snakeLen - 1; i > 0; i--) {
+      snakeX[i] = snakeX[i - 1];
+      snakeY[i] = snakeY[i - 1];
+    }
 
-  // --- Collision Detection ---
-  // 1. Wall Collision
-  if (snakeX[0] < 0 || snakeX[0] >= GRID_W || snakeY[0] < 0 || snakeY[0] >= GRID_H) {
-    gameOver = true;
-    return;
-  }
-  // 2. Self Collision
-  for (int i = 1; i < snakeLen; i++) {
-    if (snakeX[0] == snakeX[i] && snakeY[0] == snakeY[i]) {
+    // Move head
+    if (currentDir == 0) snakeY[0]--;
+    else if (currentDir == 1) snakeX[0]++;
+    else if (currentDir == 2) snakeY[0]++;
+    else if (currentDir == 3) snakeX[0]--;
+
+    // Wall Collision
+    if (snakeX[0] < 0 || snakeX[0] >= GRID_W || snakeY[0] < 0 || snakeY[0] >= GRID_H) {
       gameOver = true;
       return;
     }
-  }
+    
+    // Self Collision
+    for (int i = 1; i < snakeLen; i++) {
+      if (snakeX[0] == snakeX[i] && snakeY[0] == snakeY[i]) {
+        gameOver = true;
+        return;
+      }
+    }
 
-  // --- Food Logic ---
-  bool ateFood = false;
-  if (snakeX[0] == foodX && snakeY[0] == foodY) {
-    score++;
-    if (snakeLen < 300) snakeLen++;
-    ateFood = true;
-    spawnFood();
-  }
+    // Food Logic
+    bool ateFood = false;
+    if (snakeX[0] == foodX && snakeY[0] == foodY) {
+      score++;
+      if (snakeLen < 300) {
+        // FIX: Place the new tail piece exactly where the old tail was
+        snakeX[snakeLen] = tailX;
+        snakeY[snakeLen] = tailY;
+        snakeLen++;
+      }
+      ateFood = true;
+      spawnFood();
+    }
 
-  // --- Rendering ---
-  // Erase the old tail (only if we didn't just eat food)
-  if (!ateFood) {
-    tft.fillRect(tailX * BLOCK_SIZE, tailY * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE, ILI9341_BLACK);
+    // Rendering
+    if (!ateFood) {
+      tft.fillRect(tailX * BLOCK_SIZE, tailY * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE, ILI9341_BLACK);
+    }
+    tft.fillRect(snakeX[0] * BLOCK_SIZE, snakeY[0] * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE, ILI9341_GREEN);
   }
-  
-  // Draw the new head
-  tft.fillRect(snakeX[0] * BLOCK_SIZE, snakeY[0] * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE, ILI9341_GREEN);
-
-  // Speed of the game (lower number = faster game)
-  delay(120); 
 }
